@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -14,6 +15,7 @@ from mcrcon import MCRcon
 
 
 LOGGER = logging.getLogger("luna_minecraft_bot")
+MINECRAFT_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 
 
 class UserFacingError(Exception):
@@ -58,6 +60,13 @@ def parse_required_int(raw_value: str, name: str) -> int:
 
 def clean_command(command: str) -> str:
     return command.strip().removeprefix("/").strip()
+
+
+def clean_minecraft_username(username: str) -> str:
+    username = username.strip()
+    if not MINECRAFT_USERNAME_PATTERN.fullmatch(username):
+        raise UserFacingError("Minecraft 닉네임은 영문, 숫자, 밑줄 3-16자만 가능합니다.")
+    return username
 
 
 def discord_code_block(text: str) -> str:
@@ -130,6 +139,11 @@ class MinecraftController:
             raise UserFacingError("`.env`에 `MINECRAFT_RCON_PASSWORD`를 설정해야 RCON을 쓸 수 있습니다.")
 
         return self._rcon_sync(command)
+
+    async def whitelist_add(self, player: str) -> str:
+        player = clean_minecraft_username(player)
+        response = await self.rcon(f"whitelist add {player}")
+        return f"`{player}`를 화이트리스트에 추가했습니다.\n" + discord_code_block(response)
 
     def _rcon_sync(self, command: str) -> str:
         try:
@@ -307,6 +321,11 @@ def create_bot(settings: Settings) -> commands.Bot:
             return f"실행: `{clean_command(command)}`\n" + discord_code_block(response)
 
         await run_interaction(interaction, settings, action)
+
+    @mc_group.command(name="whitelist-add", description="플레이어를 화이트리스트에 추가합니다.")
+    @app_commands.describe(player="추가할 Minecraft Java 닉네임")
+    async def whitelist_add(interaction: discord.Interaction, player: str) -> None:
+        await run_interaction(interaction, settings, lambda: controller.whitelist_add(player))
 
     @bot.event
     async def on_ready() -> None:

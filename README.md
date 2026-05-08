@@ -7,6 +7,7 @@
 - `/mc start` - `.env`에 적은 시작 명령으로 서버 실행
 - `/mc stop` - RCON `stop`으로 서버 안전 종료
 - `/mc status` - RCON `list`로 서버 응답 확인
+- `/mc whitelist-add player:<닉네임>` - 플레이어를 화이트리스트에 추가
 - `/mc rcon command:<명령어>` - 허용된 사람만 RCON 명령 실행
 
 ## 마인크래프트 RCON 설정
