@@ -1,6 +1,6 @@
 # Luna Minecraft Discord Bot
 
-디스코드 slash command로 마인크래프트 서버를 켜고, RCON으로 상태 확인/종료/명령 실행을 하는 작은 봇입니다.
+디스코드 slash command로 마인크래프트 서버를 켜고, RCON으로 상태 확인/종료/명령 실행을 하는 봇입니다. Python 의존성 관리는 `uv`를 사용합니다.
 
 ## 기능
 
@@ -35,9 +35,7 @@ rcon.password=강한비밀번호
 Windows PowerShell 기준:
 
 ```powershell
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+uv sync
 Copy-Item .env.example .env
 ```
 
@@ -61,10 +59,20 @@ MINECRAFT_RCON_PASSWORD=server.properties와_같은_비밀번호
 ## 실행
 
 ```powershell
-python bot.py
+uv run python bot.py
 ```
 
 처음 실행하면 봇 콘솔에 slash command 동기화 로그가 찍힙니다. `DISCORD_GUILD_ID`를 넣어두면 보통 바로 보이고, 비워두면 global command라 Discord에 반영되기까지 시간이 걸릴 수 있습니다.
+
+## uv 설치가 안 되어 있을 때
+
+Windows에서는 아래 명령으로 설치할 수 있습니다.
+
+```powershell
+winget install --id Astral.UV
+```
+
+설치 후 새 PowerShell을 열고 `uv --version`으로 확인하세요.
 
 ## 보안 메모
 

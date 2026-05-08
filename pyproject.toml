@@ -1,0 +1,14 @@
+[project]
+name = "luna-minecraft"
+version = "0.1.0"
+description = "Discord bot for controlling a Minecraft server with RCON."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "discord.py>=2.4,<3",
+    "mcrcon>=0.7,<1",
+    "python-dotenv>=1.0,<2",
+]
+
+[tool.uv]
+package = false
