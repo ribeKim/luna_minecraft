@@ -41,7 +41,33 @@ Copy-Item .env.example .env
 
 그 다음 `.env`를 열어서 값들을 실제 환경에 맞게 바꿉니다.
 
-예시:
+## run.sh로 서버를 켜는 경우
+
+`./run.sh` 자체가 시작 커맨드입니다. 봇은 `MINECRAFT_SERVER_DIR`로 이동한 뒤 `MINECRAFT_START_COMMAND`를 실행합니다.
+
+Linux나 WSL 안에서 봇도 같이 실행한다면:
+
+```env
+MINECRAFT_SERVER_DIR=/home/minecraft/server
+MINECRAFT_START_COMMAND=./run.sh
+```
+
+`run.sh` 실행 권한이 없다면 서버 폴더에서 한 번만 실행하세요.
+
+```bash
+chmod +x run.sh
+```
+
+Windows에서 Git Bash의 `bash`로 `.sh`를 실행해야 한다면:
+
+```env
+MINECRAFT_SERVER_DIR=C:\minecraft\server
+MINECRAFT_START_COMMAND=bash ./run.sh
+```
+
+`run.sh`는 서버 프로세스를 백그라운드로 넘기지 말고, 보통의 `java ... nogui`처럼 계속 떠 있는 방식이어야 로그 추적과 상태 확인이 자연스럽습니다.
+
+## .env 예시
 
 ```env
 DISCORD_TOKEN=여기에_봇_토큰
@@ -49,8 +75,8 @@ DISCORD_GUILD_ID=디스코드_서버_ID
 DISCORD_ALLOWED_USER_IDS=내_디스코드_유저_ID
 ALLOW_DISCORD_ADMINS=false
 
-MINECRAFT_SERVER_DIR=C:\minecraft\server
-MINECRAFT_START_COMMAND=java -Xms2G -Xmx4G -jar server.jar nogui
+MINECRAFT_SERVER_DIR=/home/minecraft/server
+MINECRAFT_START_COMMAND=./run.sh
 MINECRAFT_RCON_HOST=127.0.0.1
 MINECRAFT_RCON_PORT=25575
 MINECRAFT_RCON_PASSWORD=server.properties와_같은_비밀번호
