@@ -129,7 +129,7 @@ class MinecraftController:
         if not self.settings.rcon_password:
             raise UserFacingError("`.env`에 `MINECRAFT_RCON_PASSWORD`를 설정해야 RCON을 쓸 수 있습니다.")
 
-        return await asyncio.to_thread(self._rcon_sync, command)
+        return self._rcon_sync(command)
 
     def _rcon_sync(self, command: str) -> str:
         try:
