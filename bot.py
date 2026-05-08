@@ -1,0 +1,336 @@
+import asyncio
+import logging
+import os
+import subprocess
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from dotenv import load_dotenv
+from mcrcon import MCRcon
+
+
+LOGGER = logging.getLogger("luna_minecraft_bot")
+
+
+class UserFacingError(Exception):
+    """Error message that is safe to show in Discord."""
+
+
+def parse_int_set(raw_value: str) -> set[int]:
+    values: set[int] = set()
+    for item in raw_value.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.add(int(item))
+        except ValueError as exc:
+            raise UserFacingError(f"ID 값이 숫자가 아닙니다: `{item}`") from exc
+    return values
+
+
+def parse_bool(raw_value: str, default: bool = False) -> bool:
+    if raw_value == "":
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def parse_optional_int(raw_value: str, name: str) -> int | None:
+    raw_value = raw_value.strip()
+    if not raw_value:
+        return None
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise UserFacingError(f"`{name}` 값은 숫자여야 합니다: `{raw_value}`") from exc
+
+
+def parse_required_int(raw_value: str, name: str) -> int:
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise UserFacingError(f"`{name}` 값은 숫자여야 합니다: `{raw_value}`") from exc
+
+
+def clean_command(command: str) -> str:
+    return command.strip().removeprefix("/").strip()
+
+
+def discord_code_block(text: str) -> str:
+    if not text:
+        text = "(응답 없음)"
+    text = text.replace("```", "`\u200b``")
+    if len(text) > 1750:
+        text = text[:1750] + "\n...응답이 길어서 잘랐습니다."
+    return f"```text\n{text}\n```"
+
+
+@dataclass(frozen=True)
+class Settings:
+    discord_token: str
+    discord_guild_id: int | None
+    allowed_user_ids: set[int]
+    allowed_role_ids: set[int]
+    allow_discord_admins: bool
+    minecraft_server_dir: Path
+    minecraft_start_command: str
+    minecraft_log_file: Path
+    startup_check_seconds: int
+    shutdown_check_seconds: int
+    rcon_host: str
+    rcon_port: int
+    rcon_password: str
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        load_dotenv()
+
+        token = os.getenv("DISCORD_TOKEN", "").strip()
+        if not token:
+            raise UserFacingError("`.env`에 `DISCORD_TOKEN`을 설정해야 합니다.")
+
+        guild_id = parse_optional_int(os.getenv("DISCORD_GUILD_ID", ""), "DISCORD_GUILD_ID")
+
+        server_dir = Path(os.getenv("MINECRAFT_SERVER_DIR", ".")).expanduser().resolve()
+        log_file_raw = os.getenv("MINECRAFT_LOG_FILE", "bot-server.log").strip()
+        log_file = Path(log_file_raw).expanduser()
+        if not log_file.is_absolute():
+            log_file = server_dir / log_file
+
+        return cls(
+            discord_token=token,
+            discord_guild_id=guild_id,
+            allowed_user_ids=parse_int_set(os.getenv("DISCORD_ALLOWED_USER_IDS", "")),
+            allowed_role_ids=parse_int_set(os.getenv("DISCORD_ALLOWED_ROLE_IDS", "")),
+            allow_discord_admins=parse_bool(os.getenv("ALLOW_DISCORD_ADMINS", ""), default=False),
+            minecraft_server_dir=server_dir,
+            minecraft_start_command=os.getenv("MINECRAFT_START_COMMAND", "").strip(),
+            minecraft_log_file=log_file.resolve(),
+            startup_check_seconds=parse_required_int(os.getenv("STARTUP_CHECK_SECONDS", "90"), "STARTUP_CHECK_SECONDS"),
+            shutdown_check_seconds=parse_required_int(os.getenv("SHUTDOWN_CHECK_SECONDS", "45"), "SHUTDOWN_CHECK_SECONDS"),
+            rcon_host=os.getenv("MINECRAFT_RCON_HOST", "127.0.0.1").strip(),
+            rcon_port=parse_required_int(os.getenv("MINECRAFT_RCON_PORT", "25575"), "MINECRAFT_RCON_PORT"),
+            rcon_password=os.getenv("MINECRAFT_RCON_PASSWORD", "").strip(),
+        )
+
+
+class MinecraftController:
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+
+    async def rcon(self, command: str) -> str:
+        command = clean_command(command)
+        if not command:
+            raise UserFacingError("실행할 RCON 명령어를 입력해야 합니다.")
+        if not self.settings.rcon_password:
+            raise UserFacingError("`.env`에 `MINECRAFT_RCON_PASSWORD`를 설정해야 RCON을 쓸 수 있습니다.")
+
+        return await asyncio.to_thread(self._rcon_sync, command)
+
+    def _rcon_sync(self, command: str) -> str:
+        try:
+            with MCRcon(
+                self.settings.rcon_host,
+                self.settings.rcon_password,
+                port=self.settings.rcon_port,
+            ) as mcr:
+                return mcr.command(command) or ""
+        except Exception as exc:
+            raise UserFacingError(f"RCON 연결 실패: `{exc}`") from exc
+
+    async def is_online(self) -> tuple[bool, str]:
+        if not self.settings.rcon_password:
+            return False, "RCON 비밀번호가 설정되지 않았습니다."
+
+        try:
+            response = await self.rcon("list")
+            return True, response
+        except UserFacingError as exc:
+            return False, str(exc)
+
+    async def start(self) -> str:
+        online, response = await self.is_online()
+        if online:
+            return "이미 서버가 켜져 있습니다.\n" + discord_code_block(response)
+
+        if not self.settings.minecraft_start_command:
+            raise UserFacingError("`.env`에 `MINECRAFT_START_COMMAND`를 설정해야 서버를 켤 수 있습니다.")
+        if not self.settings.minecraft_server_dir.exists():
+            raise UserFacingError(f"서버 폴더가 없습니다: `{self.settings.minecraft_server_dir}`")
+
+        self.settings.minecraft_log_file.parent.mkdir(parents=True, exist_ok=True)
+        log_handle = self.settings.minecraft_log_file.open("a", encoding="utf-8", errors="replace")
+
+        creationflags = 0
+        start_new_session = False
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        else:
+            start_new_session = True
+
+        try:
+            process = subprocess.Popen(
+                self.settings.minecraft_start_command,
+                cwd=self.settings.minecraft_server_dir,
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                shell=True,
+                creationflags=creationflags,
+                start_new_session=start_new_session,
+            )
+        except OSError as exc:
+            log_handle.close()
+            raise UserFacingError(f"서버 시작 실패: `{exc}`") from exc
+        finally:
+            try:
+                log_handle.close()
+            except OSError:
+                pass
+
+        for _ in range(max(1, self.settings.startup_check_seconds // 3)):
+            await asyncio.sleep(3)
+            online, response = await self.is_online()
+            if online:
+                return (
+                    f"서버 시작 명령을 실행했고 RCON 연결도 확인했습니다. PID: `{process.pid}`\n"
+                    + discord_code_block(response)
+                )
+
+        return (
+            f"서버 시작 명령을 실행했습니다. PID: `{process.pid}`\n"
+            f"아직 RCON 응답은 없습니다. 로그를 확인하세요: `{self.settings.minecraft_log_file}`"
+        )
+
+    async def stop(self) -> str:
+        online, _ = await self.is_online()
+        if not online:
+            return "서버가 꺼져 있거나 RCON에 연결할 수 없습니다."
+
+        response = await self.rcon("stop")
+        for _ in range(max(1, self.settings.shutdown_check_seconds // 3)):
+            await asyncio.sleep(3)
+            online, _ = await self.is_online()
+            if not online:
+                return "서버 종료 명령을 보냈고 RCON 연결이 끊어진 것을 확인했습니다."
+
+        return "서버 종료 명령을 보냈지만 아직 RCON이 응답합니다.\n" + discord_code_block(response)
+
+    async def status(self) -> str:
+        online, response = await self.is_online()
+        if online:
+            return "서버가 켜져 있습니다.\n" + discord_code_block(response)
+        return "서버가 꺼져 있거나 RCON에 연결할 수 없습니다.\n" + discord_code_block(response)
+
+
+def is_authorized(interaction: discord.Interaction, settings: Settings) -> bool:
+    user_id = interaction.user.id
+    if user_id in settings.allowed_user_ids:
+        return True
+
+    roles = getattr(interaction.user, "roles", [])
+    if any(role.id in settings.allowed_role_ids for role in roles):
+        return True
+
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if settings.allow_discord_admins and permissions and permissions.administrator:
+        return True
+
+    return False
+
+
+async def run_interaction(
+    interaction: discord.Interaction,
+    settings: Settings,
+    action,
+) -> None:
+    if not is_authorized(interaction, settings):
+        await interaction.response.send_message(
+            "이 명령을 쓸 권한이 없습니다. `.env`의 허용 유저/역할 ID를 확인하세요.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        message = await action()
+    except UserFacingError as exc:
+        message = f"실패: {exc}"
+    except Exception:
+        LOGGER.exception("Unhandled command error")
+        message = "예상치 못한 오류가 났습니다. 봇 콘솔 로그를 확인하세요."
+
+    await interaction.followup.send(message[:1990], ephemeral=True)
+
+
+def create_bot(settings: Settings) -> commands.Bot:
+    controller = MinecraftController(settings)
+    intents = discord.Intents.default()
+
+    class LunaMinecraftBot(commands.Bot):
+        async def setup_hook(self) -> None:
+            guild = discord.Object(id=settings.discord_guild_id) if settings.discord_guild_id else None
+            if guild:
+                self.tree.add_command(mc_group, guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                scope = f"guild {settings.discord_guild_id}"
+            else:
+                self.tree.add_command(mc_group)
+                synced = await self.tree.sync()
+                scope = "global"
+            LOGGER.info("Synced %s application commands to %s.", len(synced), scope)
+
+    bot = LunaMinecraftBot(command_prefix="!", intents=intents)
+    mc_group = app_commands.Group(name="mc", description="Minecraft server controls")
+
+    @mc_group.command(name="start", description="마인크래프트 서버를 켭니다.")
+    async def start(interaction: discord.Interaction) -> None:
+        await run_interaction(interaction, settings, controller.start)
+
+    @mc_group.command(name="stop", description="RCON stop 명령으로 서버를 안전하게 끕니다.")
+    async def stop(interaction: discord.Interaction) -> None:
+        await run_interaction(interaction, settings, controller.stop)
+
+    @mc_group.command(name="status", description="RCON으로 서버 상태를 확인합니다.")
+    async def status(interaction: discord.Interaction) -> None:
+        await run_interaction(interaction, settings, controller.status)
+
+    @mc_group.command(name="rcon", description="마인크래프트 RCON 명령어를 실행합니다.")
+    @app_commands.describe(command="예: list, say hello, whitelist add player")
+    async def rcon(interaction: discord.Interaction, command: str) -> None:
+        async def action() -> str:
+            response = await controller.rcon(command)
+            return f"실행: `{clean_command(command)}`\n" + discord_code_block(response)
+
+        await run_interaction(interaction, settings, action)
+
+    @bot.event
+    async def on_ready() -> None:
+        LOGGER.info("Logged in as %s (%s).", bot.user, bot.user.id if bot.user else "unknown")
+
+    return bot
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    try:
+        settings = Settings.from_env()
+    except UserFacingError as exc:
+        print(f"설정 오류: {exc}", file=sys.stderr)
+        return 2
+
+    bot = create_bot(settings)
+    bot.run(settings.discord_token)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
