@@ -78,6 +78,54 @@ def discord_code_block(text: str) -> str:
     return f"```text\n{text}\n```"
 
 
+def summarize_interaction_command(interaction: discord.Interaction) -> str:
+    data = interaction.data if isinstance(interaction.data, dict) else {}
+    parts: list[str] = []
+    option_parts: list[str] = []
+
+    def walk(node: dict) -> None:
+        name = node.get("name")
+        if name:
+            parts.append(str(name))
+
+        for option in node.get("options", []) or []:
+            option_name = str(option.get("name", "unknown"))
+            if "value" in option:
+                value = option["value"]
+                if any(secret in option_name.lower() for secret in ("password", "secret", "token")):
+                    value = "[redacted]"
+                option_parts.append(f"{option_name}={value!r}")
+            else:
+                walk(option)
+
+    walk(data)
+
+    if parts:
+        command = "/" + " ".join(parts)
+    elif interaction.command:
+        command = "/" + interaction.command.qualified_name
+    else:
+        command = "/unknown"
+
+    if option_parts:
+        return f"{command} {' '.join(option_parts)}"
+    return command
+
+
+def log_command_event(interaction: discord.Interaction, event: str, command: str, detail: str = "") -> None:
+    user = interaction.user
+    LOGGER.info(
+        "Command %s: user=%s user_id=%s guild_id=%s channel_id=%s command=%s%s",
+        event,
+        user,
+        user.id,
+        interaction.guild_id,
+        interaction.channel_id,
+        command,
+        f" detail={detail}" if detail else "",
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     discord_token: str
@@ -262,21 +310,27 @@ async def run_interaction(
     settings: Settings,
     action,
 ) -> None:
+    command = summarize_interaction_command(interaction)
     if not is_authorized(interaction, settings):
+        log_command_event(interaction, "unauthorized", command)
         await interaction.response.send_message(
             "이 명령을 쓸 권한이 없습니다. `.env`의 허용 유저/역할 ID를 확인하세요.",
             ephemeral=True,
         )
         return
 
+    log_command_event(interaction, "started", command)
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         message = await action()
     except UserFacingError as exc:
+        log_command_event(interaction, "failed", command, str(exc))
         message = f"실패: {exc}"
     except Exception:
-        LOGGER.exception("Unhandled command error")
+        LOGGER.exception("Command crashed: command=%s user=%s user_id=%s", command, interaction.user, interaction.user.id)
         message = "예상치 못한 오류가 났습니다. 봇 콘솔 로그를 확인하세요."
+    else:
+        log_command_event(interaction, "completed", command)
 
     await interaction.followup.send(message[:1990], ephemeral=True)
 

@@ -91,6 +91,22 @@ uv run python bot.py
 
 처음 실행하면 봇 콘솔에 slash command 동기화 로그가 찍힙니다. `DISCORD_GUILD_ID`를 넣어두면 보통 바로 보이고, 비워두면 global command라 Discord에 반영되기까지 시간이 걸릴 수 있습니다.
 
+## 봇 명령 사용 로그
+
+systemd로 실행 중이면 누가 어떤 slash command를 썼는지 아래 명령으로 확인할 수 있습니다.
+
+```bash
+journalctl -u luna-minecraft-bot -f
+```
+
+명령 사용 로그만 보고 싶으면:
+
+```bash
+journalctl -u luna-minecraft-bot | grep 'Command '
+```
+
+로그에는 Discord 유저명, 유저 ID, 서버 ID, 채널 ID, 실행한 명령과 옵션이 남습니다. `/mc rcon`에 입력한 RCON 명령도 감사 로그에 남습니다.
+
 ## uv 설치가 안 되어 있을 때
 
 Windows에서는 아래 명령으로 설치할 수 있습니다.
