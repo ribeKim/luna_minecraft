@@ -68,6 +68,23 @@ MINECRAFT_START_COMMAND=bash ./run.sh
 
 `run.sh`는 서버 프로세스를 백그라운드로 넘기지 말고, 보통의 `java ... nogui`처럼 계속 떠 있는 방식이어야 로그 추적과 상태 확인이 자연스럽습니다.
 
+## tmux로 서버를 켜는 경우
+
+Ubuntu에서 `/mc start`가 tmux 세션을 만들게 하려면:
+
+```env
+MINECRAFT_SERVER_DIR=/opt/minecraft/server
+MINECRAFT_START_COMMAND=/usr/bin/tmux new-session -d -s minecraft './run.sh'
+```
+
+콘솔을 보려면:
+
+```bash
+sudo -u minecraft -H tmux attach -t minecraft
+```
+
+tmux에서 빠져나올 때는 `Ctrl+b`를 누른 뒤 `d`를 누르세요. 서버를 끌 때는 tmux 세션을 죽이기보다 `/mc stop`으로 RCON `stop`을 보내는 편이 안전합니다.
+
 ## .env 예시
 
 ```env

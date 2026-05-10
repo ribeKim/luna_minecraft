@@ -91,6 +91,24 @@ def discord_code_block(text: str) -> str:
     return f"```text\n{text}\n```"
 
 
+def tail_text_file(path: Path, max_bytes: int = 4000) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            return handle.read().decode("utf-8", errors="replace").strip()
+    except OSError as exc:
+        return f"로그 파일을 읽을 수 없습니다: {exc}"
+
+
+def build_start_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env.setdefault("HOME", str(Path.home()))
+    env.setdefault("TERM", "xterm-256color")
+    return env
+
+
 def summarize_interaction_command(interaction: discord.Interaction) -> str:
     data = interaction.data if isinstance(interaction.data, dict) else {}
     parts: list[str] = []
@@ -295,6 +313,7 @@ class MinecraftController:
             process = subprocess.Popen(
                 self.settings.minecraft_start_command,
                 cwd=self.settings.minecraft_server_dir,
+                env=build_start_environment(),
                 stdin=subprocess.DEVNULL,
                 stdout=log_handle,
                 stderr=subprocess.STDOUT,
@@ -310,6 +329,16 @@ class MinecraftController:
                 log_handle.close()
             except OSError:
                 pass
+
+        await asyncio.sleep(2)
+        exit_code = process.poll()
+        if exit_code not in (None, 0):
+            log_tail = tail_text_file(self.settings.minecraft_log_file)
+            raise UserFacingError(
+                f"서버 시작 명령이 바로 실패했습니다. exit code: `{exit_code}`\n"
+                f"로그: `{self.settings.minecraft_log_file}`\n"
+                + discord_code_block(log_tail)
+            )
 
         for _ in range(max(1, self.settings.startup_check_seconds // 3)):
             await asyncio.sleep(3)
