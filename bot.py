@@ -2,6 +2,8 @@ import asyncio
 import logging
 import os
 import re
+import socket
+import struct
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -11,11 +13,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
-from mcrcon import MCRcon
 
 
 LOGGER = logging.getLogger("luna_minecraft_bot")
 MINECRAFT_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+RCON_AUTH = 3
+RCON_COMMAND = 2
 
 
 class UserFacingError(Exception):
@@ -56,6 +59,16 @@ def parse_required_int(raw_value: str, name: str) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise UserFacingError(f"`{name}` 값은 숫자여야 합니다: `{raw_value}`") from exc
+
+
+def parse_required_float(raw_value: str, name: str) -> float:
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise UserFacingError(f"`{name}` 값은 숫자여야 합니다: `{raw_value}`") from exc
+    if value <= 0:
+        raise UserFacingError(f"`{name}` 값은 0보다 커야 합니다: `{raw_value}`")
+    return value
 
 
 def clean_command(command: str) -> str:
@@ -141,6 +154,7 @@ class Settings:
     rcon_host: str
     rcon_port: int
     rcon_password: str
+    rcon_timeout_seconds: float
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -172,7 +186,35 @@ class Settings:
             rcon_host=os.getenv("MINECRAFT_RCON_HOST", "127.0.0.1").strip(),
             rcon_port=parse_required_int(os.getenv("MINECRAFT_RCON_PORT", "25575"), "MINECRAFT_RCON_PORT"),
             rcon_password=os.getenv("MINECRAFT_RCON_PASSWORD", "").strip(),
+            rcon_timeout_seconds=parse_required_float(os.getenv("RCON_TIMEOUT_SECONDS", "5"), "RCON_TIMEOUT_SECONDS"),
         )
+
+
+def read_exact(sock: socket.socket, length: int) -> bytes:
+    data = b""
+    while len(data) < length:
+        chunk = sock.recv(length - len(data))
+        if not chunk:
+            raise ConnectionError("RCON 연결이 끊겼습니다.")
+        data += chunk
+    return data
+
+
+def send_rcon_packet(sock: socket.socket, request_id: int, packet_type: int, payload: str) -> None:
+    payload_bytes = payload.encode("utf-8")
+    body = struct.pack("<ii", request_id, packet_type) + payload_bytes + b"\x00\x00"
+    sock.sendall(struct.pack("<i", len(body)) + body)
+
+
+def read_rcon_packet(sock: socket.socket) -> tuple[int, int, str]:
+    length = struct.unpack("<i", read_exact(sock, 4))[0]
+    if length < 10:
+        raise ConnectionError(f"잘못된 RCON 패킷 길이입니다: {length}")
+
+    body = read_exact(sock, length)
+    request_id, packet_type = struct.unpack("<ii", body[:8])
+    payload = body[8:-2].decode("utf-8", errors="replace")
+    return request_id, packet_type, payload
 
 
 class MinecraftController:
@@ -186,7 +228,7 @@ class MinecraftController:
         if not self.settings.rcon_password:
             raise UserFacingError("`.env`에 `MINECRAFT_RCON_PASSWORD`를 설정해야 RCON을 쓸 수 있습니다.")
 
-        return self._rcon_sync(command)
+        return await asyncio.to_thread(self._rcon_sync, command)
 
     async def whitelist_add(self, player: str) -> str:
         player = clean_minecraft_username(player)
@@ -195,12 +237,27 @@ class MinecraftController:
 
     def _rcon_sync(self, command: str) -> str:
         try:
-            with MCRcon(
-                self.settings.rcon_host,
-                self.settings.rcon_password,
-                port=self.settings.rcon_port,
-            ) as mcr:
-                return mcr.command(command) or ""
+            with socket.create_connection(
+                (self.settings.rcon_host, self.settings.rcon_port),
+                timeout=self.settings.rcon_timeout_seconds,
+            ) as sock:
+                sock.settimeout(self.settings.rcon_timeout_seconds)
+                send_rcon_packet(sock, 1, RCON_AUTH, self.settings.rcon_password)
+                request_id, _, _ = read_rcon_packet(sock)
+                if request_id == -1:
+                    raise UserFacingError("RCON 로그인 실패: 비밀번호를 확인하세요.")
+
+                send_rcon_packet(sock, 2, RCON_COMMAND, command)
+                response_id, _, response = read_rcon_packet(sock)
+                if response_id != 2:
+                    raise ConnectionError(f"예상하지 못한 RCON 응답 ID입니다: {response_id}")
+                return response
+        except UserFacingError:
+            raise
+        except TimeoutError as exc:
+            raise UserFacingError(f"RCON 응답 시간 초과({self.settings.rcon_timeout_seconds:g}초)") from exc
+        except socket.timeout as exc:
+            raise UserFacingError(f"RCON 응답 시간 초과({self.settings.rcon_timeout_seconds:g}초)") from exc
         except Exception as exc:
             raise UserFacingError(f"RCON 연결 실패: `{exc}`") from exc
 
