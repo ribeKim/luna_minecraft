@@ -139,4 +139,6 @@ winget install --id Astral.UV
 
 RCON은 서버 콘솔 권한과 거의 같습니다. `DISCORD_ALLOWED_USER_IDS`나 `DISCORD_ALLOWED_ROLE_IDS`로 사용할 사람을 꼭 제한하세요. `ALLOW_DISCORD_ADMINS=true`는 개인/소규모 서버에서만 추천합니다.
 
+봇의 `/mc rcon`은 `op`, `minecraft:op`, `execute ... run op`처럼 RCON으로 OP 권한을 주는 명령을 차단합니다.
+
 또한 RCON 포트는 가능하면 외부 인터넷에 열지 말고 `127.0.0.1` 또는 내부망에서만 접근하게 두는 편이 좋습니다.

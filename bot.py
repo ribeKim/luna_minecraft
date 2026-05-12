@@ -19,6 +19,7 @@ LOGGER = logging.getLogger("luna_minecraft_bot")
 MINECRAFT_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,16}$")
 RCON_AUTH = 3
 RCON_COMMAND = 2
+BLOCKED_RCON_COMMAND_NAMES = {"op"}
 
 
 class UserFacingError(Exception):
@@ -73,6 +74,31 @@ def parse_required_float(raw_value: str, name: str) -> float:
 
 def clean_command(command: str) -> str:
     return command.strip().removeprefix("/").strip()
+
+
+def command_name(token: str) -> str:
+    return token.split(":", 1)[-1].casefold()
+
+
+def rcon_command_grants_op(command: str) -> bool:
+    tokens = clean_command(command).split()
+    if not tokens:
+        return False
+
+    if command_name(tokens[0]) in BLOCKED_RCON_COMMAND_NAMES:
+        return True
+
+    if command_name(tokens[0]) == "execute":
+        for index, token in enumerate(tokens[:-1]):
+            if command_name(token) == "run" and command_name(tokens[index + 1]) in BLOCKED_RCON_COMMAND_NAMES:
+                return True
+
+    return False
+
+
+def validate_rcon_command(command: str) -> None:
+    if rcon_command_grants_op(command):
+        raise UserFacingError("RCON으로 op 권한을 주는 명령은 차단되어 있습니다.")
 
 
 def clean_minecraft_username(username: str) -> str:
@@ -243,6 +269,7 @@ class MinecraftController:
         command = clean_command(command)
         if not command:
             raise UserFacingError("실행할 RCON 명령어를 입력해야 합니다.")
+        validate_rcon_command(command)
         if not self.settings.rcon_password:
             raise UserFacingError("`.env`에 `MINECRAFT_RCON_PASSWORD`를 설정해야 RCON을 쓸 수 있습니다.")
 
